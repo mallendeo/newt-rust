@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 newt-core = { path = "../newt-core", features = ["std"] }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "macros", "io-util", "time", "signal"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "macros", "io-util", "time", "signal", "sync"] }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "0.26"
