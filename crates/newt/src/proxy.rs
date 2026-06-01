@@ -8,7 +8,6 @@ pub struct Conn {
     pub to_target: mpsc::Sender<Vec<u8>>,
     /// target -> smoltcp: loop drains bytes to write into the smoltcp socket.
     pub from_target: mpsc::Receiver<Vec<u8>>,
-    pub closed: bool,
 }
 
 /// Spawn the task that owns the real TCP connection to `target`.
@@ -37,5 +36,5 @@ pub fn spawn_tcp(target: String) -> Conn {
         let _ = stream.shutdown().await;
     });
 
-    Conn { to_target: to_target_tx, from_target: from_target_rx, closed: false }
+    Conn { to_target: to_target_tx, from_target: from_target_rx }
 }

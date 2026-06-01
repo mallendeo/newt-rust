@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc::error::TryRecvError;
 use smoltcp::iface::SocketHandle;
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant as SmolInstant;
@@ -95,11 +96,26 @@ struct DataPlane {
     pump: wg::Pump,
     stack: netstack::Stack,
     listeners: Vec<Listener>,        // one per TCP listen port (pool entries)
-    conns: HashMap<SocketHandle, proxy::Conn>,
+    conns: HashMap<SocketHandle, Bridge>,
     udp_buf: Vec<u8>,
 }
 
 struct Listener { port: u16, target: String, handle: SocketHandle }
+
+/// Per-connection state owned by the tunnel loop. `pending` holds at most one
+/// chunk of target->smoltcp bytes that did not fit in the smoltcp tx buffer yet,
+/// so we never pull more from the bridge than smoltcp can accept (backpressure).
+struct Bridge {
+    conn: proxy::Conn,
+    pending: Vec<u8>,
+    target_done: bool,
+}
+
+impl Bridge {
+    fn new(conn: proxy::Conn) -> Self {
+        Bridge { conn, pending: Vec::new(), target_done: false }
+    }
+}
 
 const TCP_RX: usize = 4096;
 const TCP_TX: usize = 4096;
@@ -174,44 +190,83 @@ impl DataPlane {
     }
 
     fn accept_new(&mut self) {
-        let mut replacements: Vec<(usize, u16)> = Vec::new();
+        // Find listeners whose socket just became active and have no bridge yet.
+        let mut promoted: Vec<(usize, u16)> = Vec::new();
         for (i, l) in self.listeners.iter().enumerate() {
             let s = self.stack.sockets.get::<tcp::Socket>(l.handle);
             if s.is_active() && !self.conns.contains_key(&l.handle) {
-                let conn = proxy::spawn_tcp(l.target.clone());
-                self.conns.insert(l.handle, conn);
-                replacements.push((i, l.port));
+                promoted.push((i, l.port));
             }
         }
-        // Add a fresh listening socket per port that just got consumed.
-        for (i, port) in replacements {
+        // Promote in reverse index order so swap_remove keeps lower indices valid.
+        // The promoted listening socket BECOMES the connection socket; we replace
+        // its listener entry with a fresh LISTEN socket on the same port so the
+        // listeners Vec keeps exactly one entry per port.
+        for (i, port) in promoted.into_iter().rev() {
+            let l = self.listeners.swap_remove(i);
+            let conn = proxy::spawn_tcp(l.target.clone());
+            self.conns.insert(l.handle, Bridge::new(conn));
             let handle = add_listener(&mut self.stack, port);
-            let target = self.listeners[i].target.clone();
-            self.listeners.push(Listener { port, target, handle });
+            self.listeners.push(Listener { port, target: l.target, handle });
         }
     }
 
     async fn shuttle(&mut self) {
         let handles: Vec<SocketHandle> = self.conns.keys().copied().collect();
         for h in handles {
-            // smoltcp -> target
+            // smoltcp -> target: only consume bytes we can actually hand off, so a
+            // full bridge channel backpressures the TCP window instead of losing data.
             loop {
+                let permit = match self.conns.get(&h) {
+                    Some(b) => match b.conn.to_target.try_reserve() {
+                        Ok(p) => p,
+                        Err(_) => break, // channel full or closed: leave bytes in smoltcp
+                    },
+                    None => break,
+                };
                 let s = self.stack.sockets.get_mut::<tcp::Socket>(h);
                 if !s.can_recv() { break; }
                 let chunk = s.recv(|buf| { let v = buf.to_vec(); (v.len(), v) }).unwrap_or_default();
                 if chunk.is_empty() { break; }
-                if let Some(c) = self.conns.get(&h) { let _ = c.to_target.try_send(chunk); }
+                permit.send(chunk);
             }
-            // target -> smoltcp
-            if let Some(c) = self.conns.get_mut(&h) {
-                while let Ok(data) = c.from_target.try_recv() {
-                    let s = self.stack.sockets.get_mut::<tcp::Socket>(h);
-                    if s.can_send() { let _ = s.send_slice(&data); }
+
+            // target -> smoltcp: keep at most one leftover chunk pending; only pull a
+            // new chunk when the previous one is fully flushed. A Disconnected channel
+            // means the target closed -> mark target_done so we can FIN.
+            if let Some(b) = self.conns.get_mut(&h) {
+                if b.pending.is_empty() {
+                    match b.conn.from_target.try_recv() {
+                        Ok(d) => b.pending = d,
+                        Err(TryRecvError::Empty) => {}
+                        Err(TryRecvError::Disconnected) => b.target_done = true,
+                    }
                 }
             }
-            // Close handling: if smoltcp socket closed, drop the bridge.
-            let s = self.stack.sockets.get::<tcp::Socket>(h);
-            if !s.is_open() { self.conns.remove(&h); }
+            // Flush pending into smoltcp, keeping any unsent remainder.
+            if let Some(b) = self.conns.get_mut(&h) {
+                if !b.pending.is_empty() {
+                    let s = self.stack.sockets.get_mut::<tcp::Socket>(h);
+                    if s.can_send() {
+                        let sent = s.send_slice(&b.pending).unwrap_or(0);
+                        b.pending.drain(..sent);
+                    }
+                }
+            }
+            // Half-close: target finished and everything is flushed -> send FIN.
+            let (target_done, pending_empty) = match self.conns.get(&h) {
+                Some(b) => (b.target_done, b.pending.is_empty()),
+                None => (false, true),
+            };
+            if target_done && pending_empty {
+                let s = self.stack.sockets.get_mut::<tcp::Socket>(h);
+                if s.is_open() { s.close(); }
+            }
+            // Reap fully-closed sockets: drop the bridge AND free the smoltcp socket.
+            if !self.stack.sockets.get::<tcp::Socket>(h).is_open() {
+                self.conns.remove(&h);
+                self.stack.sockets.remove(h);
+            }
         }
     }
 }
