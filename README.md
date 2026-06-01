@@ -66,9 +66,10 @@ Example:
 
 ## Measured size
 
-x86_64 glibc, stripped, dynamically linked, measured 2026-06-01:
+x86_64, stripped, measured 2026-06-01:
 
-    target/release/newt   1,864,144 bytes
+    target/release/newt                            1,864,144 bytes   (glibc, dynamic)
+    target/x86_64-unknown-linux-musl/release/newt  1,991,456 bytes   (musl, static-pie)
 
 Idle RSS has not been measured; it requires running against a live Pangolin instance.
 
