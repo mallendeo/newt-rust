@@ -51,6 +51,34 @@ impl Device for VirtualDevice {
     }
 }
 
+use smoltcp::iface::{Config, Interface, SocketSet};
+use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
+
+pub struct Stack {
+    pub device: VirtualDevice,
+    pub iface: Interface,
+    pub sockets: SocketSet<'static>,
+}
+
+impl Stack {
+    pub fn new(tunnel_ip: IpAddress, mtu: usize, now: Instant) -> Self {
+        let mut device = VirtualDevice::new(mtu);
+        let config = Config::new(HardwareAddress::Ip);
+        let mut iface = Interface::new(config, &mut device, now);
+        iface.update_ip_addrs(|addrs| {
+            let prefix = match tunnel_ip { IpAddress::Ipv4(_) => 32, IpAddress::Ipv6(_) => 128 };
+            addrs.push(IpCidr::new(tunnel_ip, prefix)).ok();
+        });
+        Stack { device, iface, sockets: SocketSet::new(Vec::new()) }
+    }
+
+    /// Drive the stack once. Returns outbound IP packets smoltcp produced.
+    pub fn poll(&mut self, now: Instant) -> Vec<Vec<u8>> {
+        self.iface.poll(now, &mut self.device, &mut self.sockets);
+        self.device.tx.drain(..).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
