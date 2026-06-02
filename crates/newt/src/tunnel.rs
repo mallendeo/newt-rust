@@ -122,10 +122,12 @@ const TCP_TX: usize = 4096;
 
 impl DataPlane {
     async fn bring_up(wg_data: WgData, cfg: &Config, keys: &wg::Keys) -> std::io::Result<Self> {
-        let mut relay = wg_data.relay_port; if relay == 0 { relay = 21820; }
-        // Resolve endpoint host; WireGuard sends to the relay UDP port.
-        let host = wg_data.endpoint.rsplit_once(':').map(|x| x.0).unwrap_or(&wg_data.endpoint);
-        let endpoint: std::net::SocketAddr = tokio::net::lookup_host((host, relay)).await?
+        // WireGuard handshake goes to the exit node's listen port, carried in
+        // `endpoint` as host:listenPort. relayPort is for olm clients, not newt.
+        let (host, port) = wg_data.endpoint.rsplit_once(':')
+            .and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h, p)))
+            .ok_or_else(|| std::io::Error::other("bad endpoint"))?;
+        let endpoint: std::net::SocketAddr = tokio::net::lookup_host((host, port)).await?
             .next().ok_or_else(|| std::io::Error::other("resolve endpoint"))?;
         let udp = UdpSocket::bind(("0.0.0.0", 0)).await?;
         udp.connect(endpoint).await?;
@@ -135,7 +137,8 @@ impl DataPlane {
 
         // Kick the handshake now; update_timers retransmits if the first init is lost.
         if let Some(init) = pump.initiate_handshake() {
-            udp.send(&init).await?;
+            let n = udp.send(&init).await?;
+            crate::info!("wireguard handshake sent to {endpoint} ({n} bytes)");
         }
 
         let tunnel_ip: IpAddress = wg_data.tunnel_ip.parse().map_err(|_| std::io::Error::other("bad tunnelIP"))?;
