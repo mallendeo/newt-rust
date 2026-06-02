@@ -29,6 +29,25 @@ A stable toolchain is pinned in `rust-toolchain.toml`.
 
 The binary is written to `target/release/newt`.
 
+### Minimum-size build (nightly)
+
+Recompiling `std` from source with size-optimized settings and an immediate-abort
+panic strategy produces a smaller binary. It requires the nightly toolchain and the
+`rust-src` component:
+
+    rustup toolchain install nightly
+    rustup component add rust-src --toolchain nightly
+
+    RUSTFLAGS="-Zlocation-detail=none -Zfmt-debug=none -Zunstable-options -Cpanic=immediate-abort" \
+      cargo +nightly build -Z build-std=std,panic_abort \
+      -Z build-std-features="optimize_for_size" \
+      --target x86_64-unknown-linux-gnu --release -p newt
+
+The binary is written to `target/x86_64-unknown-linux-gnu/release/newt`; substitute your
+host triple (`rustc -vV`) for other targets. This is an opt-in release path:
+`build-std` requires an explicit `--target`, and `panic=immediate-abort` makes panics
+abort rather than unwind, which `cargo test` relies on, so it is not the default build.
+
 Static musl build:
 
     rustup target add x86_64-unknown-linux-musl
@@ -68,8 +87,9 @@ Example:
 
 x86_64, stripped, measured 2026-06-01:
 
-    target/release/newt                            1,864,144 bytes   (glibc, dynamic)
-    target/x86_64-unknown-linux-musl/release/newt  1,991,456 bytes   (musl, static-pie)
+    target/release/newt                                  1,864,144 bytes   (stable, glibc, dynamic)
+    target/x86_64-unknown-linux-gnu/release/newt         1,352,296 bytes   (nightly build-std, glibc)
+    target/x86_64-unknown-linux-musl/release/newt        1,991,456 bytes   (stable musl, static-pie)
 
 Idle RSS has not been measured; it requires running against a live Pangolin instance.
 
