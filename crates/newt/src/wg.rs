@@ -68,6 +68,17 @@ impl Pump {
         self.decapsulate(&[])
     }
 
+    /// Force a handshake initiation. newt is the passive side with no outbound
+    /// data to trigger one, so it must reach out first to holepunch and bring the
+    /// session up; otherwise the exit node never sees traffic and the site stays offline.
+    pub fn initiate_handshake(&mut self) -> Option<Vec<u8>> {
+        let mut dst = self.scratch();
+        match self.tun.format_handshake_initiation(&mut dst, false) {
+            TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
+            _ => None,
+        }
+    }
+
     pub fn update_timers(&mut self) -> Option<Vec<u8>> {
         let mut dst = self.scratch();
         match self.tun.update_timers(&mut dst) {

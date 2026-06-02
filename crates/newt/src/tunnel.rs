@@ -131,7 +131,12 @@ impl DataPlane {
         udp.connect(endpoint).await?;
 
         let peer_pub = wg::public_from_b64(&wg_data.public_key).map_err(std::io::Error::other)?;
-        let pump = wg::Pump::new(keys.secret.clone(), peer_pub, cfg.mtu);
+        let mut pump = wg::Pump::new(keys.secret.clone(), peer_pub, cfg.mtu);
+
+        // Kick the handshake now; update_timers retransmits if the first init is lost.
+        if let Some(init) = pump.initiate_handshake() {
+            udp.send(&init).await?;
+        }
 
         let tunnel_ip: IpAddress = wg_data.tunnel_ip.parse().map_err(|_| std::io::Error::other("bad tunnelIP"))?;
         let mut stack = netstack::Stack::new(tunnel_ip, cfg.mtu, SmolInstant::ZERO);
