@@ -57,6 +57,7 @@ async fn session(
             }
             _ = tick.tick() => {
                 for act in sm.step(Event::Tick(1000)) { exec(&mut socket, &mut data, act, cfg, keys).await?; }
+                if let Some(d) = data.as_mut() { d.send_ping().await?; }
             }
             // Data-plane progress: only armed once a tunnel exists.
             r = drive(&mut data), if data.is_some() => { r?; }
@@ -98,6 +99,9 @@ struct DataPlane {
     listeners: Vec<Listener>,        // one per TCP listen port (pool entries)
     conns: HashMap<SocketHandle, Bridge>,
     udp_buf: Vec<u8>,
+    server_ip: [u8; 4],              // exit node tunnel IP, pinged to keep the site online
+    tunnel_ip4: [u8; 4],             // our tunnel IP, ping source
+    ping_seq: u16,
 }
 
 struct Listener { port: u16, target: String, handle: SocketHandle }
@@ -152,10 +156,28 @@ impl DataPlane {
         }
         crate::info!("tunnel up: {} tcp target(s)", listeners.len());
 
+        let server_ip: std::net::Ipv4Addr = wg_data.server_ip.parse()
+            .map_err(|_| std::io::Error::other("bad serverIP"))?;
+        let tunnel_ip4: std::net::Ipv4Addr = wg_data.tunnel_ip.parse()
+            .map_err(|_| std::io::Error::other("bad tunnelIP"))?;
+
         Ok(DataPlane {
             udp, pump, stack, listeners,
             conns: HashMap::new(), udp_buf: vec![0u8; cfg.mtu.max(1500) + 64],
+            server_ip: server_ip.octets(), tunnel_ip4: tunnel_ip4.octets(), ping_seq: 0,
         })
+    }
+
+    /// Send an ICMP echo to the exit node's tunnel IP. This drives the WireGuard
+    /// handshake and produces the inbound traffic the exit node counts to mark the
+    /// site online; without it a passive newt with no targets never reports as up.
+    async fn send_ping(&mut self) -> std::io::Result<()> {
+        self.ping_seq = self.ping_seq.wrapping_add(1);
+        let pkt = icmp_echo(self.tunnel_ip4, self.server_ip, 1, self.ping_seq);
+        if let Some(dg) = self.pump.encapsulate(&pkt) {
+            self.udp.send(&dg).await?;
+        }
+        Ok(())
     }
 
     async fn step_io(&mut self) -> std::io::Result<()> {
@@ -277,6 +299,41 @@ impl DataPlane {
             }
         }
     }
+}
+
+/// Build an IPv4 ICMP echo request packet (matches the upstream newt keepalive ping).
+fn icmp_echo(src: [u8; 4], dst: [u8; 4], ident: u16, seq: u16) -> Vec<u8> {
+    let payload = b"newtping";
+    let mut icmp = Vec::with_capacity(8 + payload.len());
+    icmp.extend_from_slice(&[8, 0, 0, 0]); // type=echo request, code=0, checksum placeholder
+    icmp.extend_from_slice(&ident.to_be_bytes());
+    icmp.extend_from_slice(&seq.to_be_bytes());
+    icmp.extend_from_slice(payload);
+    let c = checksum(&icmp);
+    icmp[2..4].copy_from_slice(&c.to_be_bytes());
+
+    let total = 20 + icmp.len();
+    let mut ip = Vec::with_capacity(total);
+    ip.extend_from_slice(&[0x45, 0x00]);                  // version/IHL, DSCP/ECN
+    ip.extend_from_slice(&(total as u16).to_be_bytes());  // total length
+    ip.extend_from_slice(&[0, 0, 0x40, 0x00]);            // id, flags=DF
+    ip.extend_from_slice(&[64, 1, 0, 0]);                 // ttl, proto=ICMP, checksum placeholder
+    ip.extend_from_slice(&src);
+    ip.extend_from_slice(&dst);
+    let c = checksum(&ip);
+    ip[10..12].copy_from_slice(&c.to_be_bytes());
+    ip.extend_from_slice(&icmp);
+    ip
+}
+
+/// Internet checksum (RFC 1071).
+fn checksum(data: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut chunks = data.chunks_exact(2);
+    for c in &mut chunks { sum += u16::from_be_bytes([c[0], c[1]]) as u32; }
+    if let [last] = chunks.remainder() { sum += (*last as u32) << 8; }
+    while (sum >> 16) != 0 { sum = (sum & 0xffff) + (sum >> 16); }
+    !(sum as u16)
 }
 
 fn add_listener(stack: &mut netstack::Stack, port: u16) -> SocketHandle {
