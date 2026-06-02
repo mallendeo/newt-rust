@@ -1,0 +1,7 @@
+# Packages a prebuilt static binary into a scratch image. The CI release
+# workflow stages bin/${TARGETPLATFORM}/newt before building.
+# TLS roots are compiled into the binary, so no CA bundle is needed.
+FROM scratch
+ARG TARGETPLATFORM
+COPY bin/${TARGETPLATFORM}/newt /newt
+ENTRYPOINT ["/newt"]
