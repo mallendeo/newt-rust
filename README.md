@@ -60,6 +60,19 @@ linked` under `ldd`. The absolute-minimum `RUSTFLAGS` above can be combined with
 The default build target is glibc so day-to-day `cargo build`/`cargo test` need no extra
 C toolchain; the static musl build is the distribution artifact.
 
+## Container
+
+The `Dockerfile` builds the static musl binary and copies it into a `scratch` image.
+The TLS roots are compiled into the binary and nothing is shelled out, so the image
+carries no base OS, certificate bundle, or shell:
+
+    docker build -t newt-rust .
+    docker run --rm \
+      -e NEWT_ID=... -e NEWT_SECRET=... -e PANGOLIN_ENDPOINT=https://app.example.com \
+      newt-rust
+
+The image holds a single file, the binary (1.41 MB; about 0.8 MB compressed).
+
 ## Configuration
 
 Inputs come from environment variables, overridden by CLI flags. `endpoint`, `id`,
