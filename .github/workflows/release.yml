@@ -133,4 +133,4 @@ jobs:
 
           Verify downloads against \`SHA256SUMS\`.
           EOF
-          gh release create "$TAG" --title "$TAG" --notes-file ../NOTES.md *
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file ../NOTES.md *
