@@ -174,8 +174,9 @@ impl DataPlane {
     async fn send_ping(&mut self) -> std::io::Result<()> {
         self.ping_seq = self.ping_seq.wrapping_add(1);
         let pkt = icmp_echo(self.tunnel_ip4, self.server_ip, 1, self.ping_seq);
-        if let Some(dg) = self.pump.encapsulate(&pkt) {
-            self.udp.send(&dg).await?;
+        match self.pump.encapsulate(&pkt) {
+            Some(dg) => { let n = dg.len(); self.udp.send(&dg).await?; crate::info!("ping tx: {n} bytes"); }
+            None => crate::info!("ping: no session yet (handshaking)"),
         }
         Ok(())
     }
@@ -185,6 +186,7 @@ impl DataPlane {
         tokio::select! {
             r = self.udp.recv(&mut self.udp_buf) => {
                 let n = r?;
+                crate::info!("wg rx: {n} bytes");
                 let datagram = self.udp_buf[..n].to_vec();
                 match self.pump.decapsulate(&datagram) {
                     wg::Inbound::Packet(p) => self.stack.device.rx.push_back(p),
