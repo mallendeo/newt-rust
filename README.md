@@ -45,8 +45,20 @@ For the smallest on-disk artifact, the result can be packed with
 [UPX](https://github.com/upx/upx) (`upx --best --lzma`). Packing roughly halves the
 file but decompresses into memory at startup, raising RSS, so it is not used by default.
 
-The `x86_64-unknown-linux-musl` target does not currently build under the default
-`build-std` configuration.
+### Static build (no runtime dependencies)
+
+For a self-contained binary with no shared-library dependencies, build for musl. Add
+the target and provide a musl-targeting C compiler (the `ring` dependency compiles C):
+
+    rustup target add x86_64-unknown-linux-musl
+    cargo build --release -p newt --target x86_64-unknown-linux-musl
+
+The result at `target/x86_64-unknown-linux-musl/release/newt` reports `statically
+linked` under `ldd`. The absolute-minimum `RUSTFLAGS` above can be combined with the
+`--target` flag for the smallest static binary.
+
+The default build target is glibc so day-to-day `cargo build`/`cargo test` need no extra
+C toolchain; the static musl build is the distribution artifact.
 
 ## Configuration
 
@@ -77,11 +89,15 @@ Example:
 
 ## Measured size
 
-x86_64 glibc, stripped, measured 2026-06-01:
+x86_64, stripped, measured 2026-06-01:
 
-    default release                  1,505,400 bytes
-    absolute-minimum                 1,352,296 bytes
-    absolute-minimum + UPX           657,820 bytes
+    glibc (dynamic):
+      default release          1,505,400 bytes
+      absolute-minimum         1,352,296 bytes
+    musl (static, no deps):
+      default release          1,632,632 bytes
+      absolute-minimum         1,411,416 bytes
+      absolute-minimum + UPX     691,740 bytes
 
 Idle RSS has not been measured; it requires running against a live Pangolin instance.
 
