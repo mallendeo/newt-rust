@@ -31,6 +31,9 @@ jobs:
         with:
           tool: cargo-zigbuild
 
+      - name: Add target (for musl startup objects; tier-3 targets fall back to build-std)
+        run: rustup target add "${{ matrix.target }}" || true
+
       - name: Build static binary
         env:
           RUSTFLAGS: "-Zlocation-detail=none -Zfmt-debug=none -Zunstable-options -Cpanic=immediate-abort"
