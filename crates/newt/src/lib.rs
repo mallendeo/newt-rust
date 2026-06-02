@@ -2,6 +2,7 @@ pub mod config;
 pub mod log;
 pub mod transport;
 pub mod wg;
+pub mod holepunch;
 pub mod netstack;
 pub mod proxy;
 pub mod tunnel;

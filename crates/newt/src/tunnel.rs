@@ -45,19 +45,19 @@ async fn session(
     let mut data: Option<DataPlane> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
 
-    for act in sm.step(Event::WsConnected) { exec(&mut socket, &mut data, act, cfg, keys).await?; }
+    for act in sm.step(Event::WsConnected) { exec(&mut socket, &mut data, act, cfg, keys, &jwt).await?; }
 
     loop {
         tokio::select! {
             msg = ws::recv(&mut socket) => {
                 let Some(msg) = msg? else { return Ok(()); };
                 if let Some(ev) = to_event(msg) {
-                    for act in sm.step(ev) { exec(&mut socket, &mut data, act, cfg, keys).await?; }
+                    for act in sm.step(ev) { exec(&mut socket, &mut data, act, cfg, keys, &jwt).await?; }
                 }
             }
             _ = tick.tick() => {
-                for act in sm.step(Event::Tick(1000)) { exec(&mut socket, &mut data, act, cfg, keys).await?; }
-                if let Some(d) = data.as_mut() { d.send_ping().await?; }
+                for act in sm.step(Event::Tick(1000)) { exec(&mut socket, &mut data, act, cfg, keys, &jwt).await?; }
+                if let Some(d) = data.as_mut() { d.send_ping().await?; d.send_holepunch().await?; }
             }
             // Data-plane progress: only armed once a tunnel exists.
             r = drive(&mut data), if data.is_some() => { r?; }
@@ -82,10 +82,11 @@ async fn exec(
     act: Action,
     cfg: &Config,
     keys: &wg::Keys,
+    token: &str,
 ) -> std::io::Result<()> {
     match act {
         Action::Send(m) => ws::send(socket, &m).await?,
-        Action::BringUp(wg_data) => { *data = Some(DataPlane::bring_up(wg_data, cfg, keys).await?); }
+        Action::BringUp(wg_data) => { *data = Some(DataPlane::bring_up(wg_data, cfg, keys, token).await?); }
         Action::Teardown => { *data = None; }
         Action::Stop => return Err(std::io::Error::other("terminated by server")),
     }
@@ -99,9 +100,15 @@ struct DataPlane {
     listeners: Vec<Listener>,        // one per TCP listen port (pool entries)
     conns: HashMap<SocketHandle, Bridge>,
     udp_buf: Vec<u8>,
+    endpoint: std::net::SocketAddr,  // exit node WireGuard endpoint
+    relay_addr: std::net::SocketAddr,// exit node hole-punch (relay) endpoint
     server_ip: [u8; 4],              // exit node tunnel IP, pinged to keep the site online
     tunnel_ip4: [u8; 4],             // our tunnel IP, ping source
     ping_seq: u16,
+    newt_id: String,
+    token: String,
+    newt_pub: String,
+    server_pub: String,
 }
 
 struct Listener { port: u16, target: String, handle: SocketHandle }
@@ -125,23 +132,25 @@ const TCP_RX: usize = 4096;
 const TCP_TX: usize = 4096;
 
 impl DataPlane {
-    async fn bring_up(wg_data: WgData, cfg: &Config, keys: &wg::Keys) -> std::io::Result<Self> {
+    async fn bring_up(wg_data: WgData, cfg: &Config, keys: &wg::Keys, token: &str) -> std::io::Result<Self> {
         // WireGuard handshake goes to the exit node's listen port, carried in
-        // `endpoint` as host:listenPort. relayPort is for olm clients, not newt.
+        // `endpoint` as host:listenPort. The hole punch goes to relayPort on the
+        // same host, sent from this same socket so it shares the source endpoint.
         let (host, port) = wg_data.endpoint.rsplit_once(':')
             .and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h, p)))
             .ok_or_else(|| std::io::Error::other("bad endpoint"))?;
         let endpoint: std::net::SocketAddr = tokio::net::lookup_host((host, port)).await?
             .next().ok_or_else(|| std::io::Error::other("resolve endpoint"))?;
+        let relay_port = if wg_data.relay_port == 0 { 21820 } else { wg_data.relay_port };
+        let relay_addr = std::net::SocketAddr::new(endpoint.ip(), relay_port);
         let udp = UdpSocket::bind(("0.0.0.0", 0)).await?;
-        udp.connect(endpoint).await?;
 
         let peer_pub = wg::public_from_b64(&wg_data.public_key).map_err(std::io::Error::other)?;
         let mut pump = wg::Pump::new(keys.secret.clone(), peer_pub, cfg.mtu);
 
         // Kick the handshake now; update_timers retransmits if the first init is lost.
         if let Some(init) = pump.initiate_handshake() {
-            let n = udp.send(&init).await?;
+            let n = udp.send_to(&init, endpoint).await?;
             crate::info!("wireguard handshake sent to {endpoint} ({n} bytes)");
         }
 
@@ -164,8 +173,20 @@ impl DataPlane {
         Ok(DataPlane {
             udp, pump, stack, listeners,
             conns: HashMap::new(), udp_buf: vec![0u8; cfg.mtu.max(1500) + 64],
+            endpoint, relay_addr,
             server_ip: server_ip.octets(), tunnel_ip4: tunnel_ip4.octets(), ping_seq: 0,
+            newt_id: cfg.id.clone(), token: token.to_string(),
+            newt_pub: keys.public_b64.clone(), server_pub: wg_data.public_key.clone(),
         })
+    }
+
+    /// Register our live UDP endpoint with the exit node's relay. The exit node
+    /// tracks connectors by this hole punch; without it the site does not stay up.
+    async fn send_holepunch(&self) -> std::io::Result<()> {
+        if let Some(pkt) = crate::holepunch::build(&self.newt_id, &self.token, &self.newt_pub, &self.server_pub) {
+            self.udp.send_to(&pkt, self.relay_addr).await?;
+        }
+        Ok(())
     }
 
     /// Send an ICMP echo to the exit node's tunnel IP. This drives the WireGuard
@@ -174,9 +195,8 @@ impl DataPlane {
     async fn send_ping(&mut self) -> std::io::Result<()> {
         self.ping_seq = self.ping_seq.wrapping_add(1);
         let pkt = icmp_echo(self.tunnel_ip4, self.server_ip, 1, self.ping_seq);
-        match self.pump.encapsulate(&pkt) {
-            Some(dg) => { let n = dg.len(); self.udp.send(&dg).await?; crate::info!("ping tx: {n} bytes"); }
-            None => crate::info!("ping: no session yet (handshaking)"),
+        if let Some(dg) = self.pump.encapsulate(&pkt) {
+            self.udp.send_to(&dg, self.endpoint).await?;
         }
         Ok(())
     }
@@ -184,19 +204,18 @@ impl DataPlane {
     async fn step_io(&mut self) -> std::io::Result<()> {
         // 1. Receive inbound WireGuard datagrams (with a short timeout fallback).
         tokio::select! {
-            r = self.udp.recv(&mut self.udp_buf) => {
-                let n = r?;
-                crate::info!("wg rx: {n} bytes");
+            r = self.udp.recv_from(&mut self.udp_buf) => {
+                let (n, _src) = r?;
                 let datagram = self.udp_buf[..n].to_vec();
                 match self.pump.decapsulate(&datagram) {
                     wg::Inbound::Packet(p) => self.stack.device.rx.push_back(p),
-                    wg::Inbound::Network(b) => { let _ = self.udp.send(&b).await; }
+                    wg::Inbound::Network(b) => { let _ = self.udp.send_to(&b, self.endpoint).await; }
                     wg::Inbound::Nothing => {}
                 }
                 loop {
                     match self.pump.drain() {
                         wg::Inbound::Packet(p) => self.stack.device.rx.push_back(p),
-                        wg::Inbound::Network(b) => { let _ = self.udp.send(&b).await; }
+                        wg::Inbound::Network(b) => { let _ = self.udp.send_to(&b, self.endpoint).await; }
                         wg::Inbound::Nothing => break,
                     }
                 }
@@ -207,11 +226,11 @@ impl DataPlane {
         // 2. Poll smoltcp; encapsulate any outbound IP packets.
         let outbound = self.stack.poll(SmolInstant::ZERO);
         for pkt in outbound {
-            if let Some(dg) = self.pump.encapsulate(&pkt) { let _ = self.udp.send(&dg).await; }
+            if let Some(dg) = self.pump.encapsulate(&pkt) { let _ = self.udp.send_to(&dg, self.endpoint).await; }
         }
 
         // 3. WireGuard timers.
-        if let Some(dg) = self.pump.update_timers() { let _ = self.udp.send(&dg).await; }
+        if let Some(dg) = self.pump.update_timers() { let _ = self.udp.send_to(&dg, self.endpoint).await; }
 
         // 4. Service listeners: detect newly-established connections, wire bridges.
         self.accept_new();
