@@ -13,9 +13,11 @@ pub async fn get_token(
 ) -> std::io::Result<String> {
     let (scheme, hostport, host, port) = split_endpoint(endpoint)?;
     let body = serde_json::json!({ "newtId": id, "secret": secret }).to_string();
+    // Pangolin rejects non-GET API calls without this fixed CSRF header.
     let req = format!(
         "POST /api/v1/auth/newt/get-token HTTP/1.1\r\nHost: {hostport}\r\n\
-         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+         Content-Type: application/json\r\nX-CSRF-Token: x-csrf-protection\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
 
