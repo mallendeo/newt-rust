@@ -23,10 +23,7 @@ pub async fn run(cfg: Config) -> std::io::Result<()> {
         if let Err(e) = session(&cfg, &tls_cfg, &keys, &mut sm).await {
             crate::warn!("session ended: {e}; reconnecting in 3s");
         }
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(3)) => {}
-            _ = tokio::signal::ctrl_c() => { crate::info!("shutting down"); return Ok(()); }
-        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
         sm = Sm::new(keys.public_b64.clone(), concat!("rust-", env!("CARGO_PKG_VERSION")).into(), false);
     }
 }
@@ -70,7 +67,6 @@ async fn session(
             }
             // Data-plane progress: only armed once a tunnel exists.
             r = drive(&mut data), if data.is_some() => { r?; }
-            _ = tokio::signal::ctrl_c() => { return Err(std::io::Error::other("ctrl-c")); }
         }
     }
 }
