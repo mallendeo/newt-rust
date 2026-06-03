@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/newt-core", "crates/newt"]
+members = ["crates/newt-core", "crates/newt", "crates/boringtun"]
 
 [profile.release]
 opt-level = "z"

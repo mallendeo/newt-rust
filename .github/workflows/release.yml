@@ -54,6 +54,49 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # mips (Teltonika routers etc.): tier-3 targets built via build-std, ring-free
+  # (de-ringed boringtun + rustls-rustcrypto). Separate + continue-on-error so a
+  # build-std hiccup never blocks the mainstream release.
+  mips:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Soft-float musl toolchains; matches OpenWRT/Teltonika. zig cannot
+          # cross mips-musl, so use the musl.cc cross toolchains as the linker.
+          - { target: mips-unknown-linux-musl,   suffix: linux-mips,   tc: mips-linux-muslsf }
+          - { target: mipsel-unknown-linux-musl, suffix: linux-mipsel, tc: mipsel-linux-muslsf }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch musl cross toolchain
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://musl.cc/${{ matrix.tc }}-cross.tgz" -o tc.tgz
+          tar -xzf tc.tgz
+
+      - name: Build static binary (build-std + musl cross linker)
+        env:
+          RUSTFLAGS: "-Zlocation-detail=none -Zfmt-debug=none -Zunstable-options -Cpanic=immediate-abort"
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/${{ matrix.tc }}-cross/bin:$PATH"
+          VAR="CARGO_TARGET_$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')_LINKER"
+          export "$VAR=${{ matrix.tc }}-gcc"
+          cargo build --release -p newt --target "${{ matrix.target }}"
+          mkdir -p out
+          install -Dm755 "target/${{ matrix.target }}/release/newt" \
+            "out/newt-${GITHUB_REF_NAME}-${{ matrix.suffix }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.suffix }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
   # Best-effort native FreeBSD build in a VM (zig cannot cross-compile FreeBSD libc).
   # continue-on-error so a FreeBSD failure never blocks the Linux release.
   freebsd:
@@ -138,7 +181,7 @@ jobs:
             ${{ env.IMAGE }}:latest
 
   release:
-    needs: [build, docker, freebsd]
+    needs: [build, docker, freebsd, mips]
     runs-on: ubuntu-latest
     permissions:
       contents: write

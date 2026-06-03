@@ -1,13 +1,18 @@
 use std::sync::Arc;
 use rustls::ClientConfig;
 
-/// Build a rustls ClientConfig using the ring provider and bundled webpki roots.
-/// When `skip_verify` is set, server certificates are accepted unconditionally.
+/// Build a rustls ClientConfig with bundled webpki roots. Uses the ring crypto
+/// provider everywhere except mips, where ring has no asm and the pure-Rust
+/// RustCrypto provider is used instead.
 pub fn client_config(skip_verify: bool) -> Arc<ClientConfig> {
+    #[cfg(not(target_arch = "mips"))]
     let provider = Arc::new(rustls::crypto::ring::default_provider());
+    #[cfg(target_arch = "mips")]
+    let provider = Arc::new(rustls_rustcrypto::provider());
+
     let builder = ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
-        .expect("ring supports default protocol versions");
+        .expect("provider supports default protocol versions");
 
     let cfg = if skip_verify {
         builder

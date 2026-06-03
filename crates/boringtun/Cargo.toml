@@ -1,0 +1,31 @@
+# Vendored from boringtun 0.7.1 (cloudflare/boringtun, BSD-3-Clause), trimmed to the
+# noise engine and de-ringed: the WireGuard AEAD and constant-time compares now use
+# the pure-Rust chacha20poly1305 + subtle crates instead of `ring`, so it builds for
+# targets ring does not support (mips, etc.).
+[package]
+name = "boringtun"
+version = "0.7.1"
+edition = "2018"
+license = "BSD-3-Clause"
+description = "Vendored, de-ringed WireGuard noise engine (from cloudflare/boringtun)"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+base64 = "0.22"
+hex = "0.4"
+libc = "0.2"
+parking_lot = "0.12"
+portable-atomic = { version = "1.13.1", features = ["fallback"] }
+tracing = "0.1.40"
+x25519-dalek = { version = "2.0.1", features = ["reusable_secrets", "static_secrets"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+chacha20poly1305 = "0.10"
+aead = "0.5.0-pre.2"
+blake2 = "0.10"
+hmac = "0.12"
+subtle = "2"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["time", "user"] }
