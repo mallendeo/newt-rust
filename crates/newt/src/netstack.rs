@@ -77,6 +77,26 @@ impl Stack {
         self.iface.poll(now, &mut self.device, &mut self.sockets);
         self.device.tx.drain(..).collect()
     }
+
+    /// Install default routes so the stack can originate connections to
+    /// off-link destinations (used by the client/olm userspace backend). The
+    /// device has no link layer, so the gateway is only a routing placeholder;
+    /// the emitted IP packet is demultiplexed downstream by destination.
+    pub fn add_default_routes(&mut self, gw4: smoltcp::wire::Ipv4Address, gw6: smoltcp::wire::Ipv6Address) {
+        self.iface.routes_mut().add_default_ipv4_route(gw4).ok();
+        self.iface.routes_mut().add_default_ipv6_route(gw6).ok();
+    }
+
+    /// Originate a connection from `local_port` to `remote` on a TCP socket.
+    pub fn connect(
+        &mut self,
+        handle: smoltcp::iface::SocketHandle,
+        remote: (smoltcp::wire::IpAddress, u16),
+        local_port: u16,
+    ) -> Result<(), smoltcp::socket::tcp::ConnectError> {
+        let cx = self.iface.context();
+        self.sockets.get_mut::<smoltcp::socket::tcp::Socket>(handle).connect(cx, remote, local_port)
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
-use newt_lib::config::Config;
-use newt_lib::tunnel;
+use newt_lib::config::{ClientRun, Config, SiteRun};
+use newt_lib::{olm, tunnel};
 
 /// Resolve on SIGINT or SIGTERM so `docker stop`/`restart` exits promptly
 /// instead of waiting for the kill timeout.
@@ -33,13 +33,28 @@ fn main() {
         .build()
         .expect("build runtime");
     let result = rt.block_on(async {
+        let Config { site, client, .. } = cfg;
         tokio::select! {
-            r = tunnel::run(cfg) => r,
+            r = run_roles(site, client) => r,
             _ = shutdown_signal() => { newt_lib::info!("shutting down"); Ok(()) }
         }
     });
     if let Err(e) = result {
         newt_lib::error!("fatal: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Run the active role(s). With both active they run concurrently; if either
+/// exits the process exits so a supervisor can restart cleanly.
+async fn run_roles(site: Option<SiteRun>, client: Option<ClientRun>) -> std::io::Result<()> {
+    match (site, client) {
+        (Some(s), None) => tunnel::run(s).await,
+        (None, Some(c)) => olm::run(c).await,
+        (Some(s), Some(c)) => tokio::select! {
+            r = tunnel::run(s) => r,
+            r = olm::run(c) => r,
+        },
+        (None, None) => Ok(()),
     }
 }

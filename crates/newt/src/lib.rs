@@ -6,3 +6,4 @@ pub mod holepunch;
 pub mod netstack;
 pub mod proxy;
 pub mod tunnel;
+pub mod olm;

@@ -10,11 +10,11 @@ use smoltcp::wire::IpAddress;
 use newt_core::proto::{topic, ExitNodeData, WgData, WsMessage};
 use newt_core::sm::{Action, Event, Sm};
 use newt_core::target::Target;
-use crate::config::Config;
+use crate::config::SiteRun;
 use crate::transport::{tls, token, ws};
 use crate::{wg, netstack, proxy};
 
-pub async fn run(cfg: Config) -> std::io::Result<()> {
+pub async fn run(cfg: SiteRun) -> std::io::Result<()> {
     let tls_cfg = tls::client_config(cfg.skip_tls_verify);
     let keys = wg::generate_keys();
     let mut sm = Sm::new(keys.public_b64.clone(), concat!("rust-", env!("CARGO_PKG_VERSION")).into(), false);
@@ -30,13 +30,18 @@ pub async fn run(cfg: Config) -> std::io::Result<()> {
 
 /// One WebSocket session: connect, run the control + data planes until drop.
 async fn session(
-    cfg: &Config,
+    cfg: &SiteRun,
     tls_cfg: &Arc<rustls::ClientConfig>,
     keys: &wg::Keys,
     sm: &mut Sm,
 ) -> std::io::Result<()> {
-    let jwt = token::get_token(&cfg.endpoint, &cfg.id, &cfg.secret, tls_cfg.clone()).await?;
-    let mut socket = ws::connect(&cfg.endpoint, &jwt, tls_cfg.clone()).await?;
+    let jwt = token::get_token(
+        &cfg.endpoint,
+        "newt",
+        &serde_json::json!({ "newtId": cfg.id, "secret": cfg.secret }),
+        tls_cfg.clone(),
+    ).await?;
+    let mut socket = ws::connect(&cfg.endpoint, &jwt, "newt", tls_cfg.clone()).await?;
     crate::info!("websocket connected");
 
     let mut data: Option<DataPlane> = None;
@@ -85,7 +90,7 @@ async fn exec(
     socket: &mut ws::Ws,
     data: &mut Option<DataPlane>,
     act: Action,
-    cfg: &Config,
+    cfg: &SiteRun,
     keys: &wg::Keys,
     token: &str,
 ) -> std::io::Result<()> {
@@ -137,7 +142,7 @@ const TCP_RX: usize = 4096;
 const TCP_TX: usize = 4096;
 
 impl DataPlane {
-    async fn bring_up(wg_data: WgData, cfg: &Config, keys: &wg::Keys, token: &str) -> std::io::Result<Self> {
+    async fn bring_up(wg_data: WgData, cfg: &SiteRun, keys: &wg::Keys, token: &str) -> std::io::Result<Self> {
         // WireGuard handshake goes to the exit node's listen port, carried in
         // `endpoint` as host:listenPort. The hole punch goes to relayPort on the
         // same host, sent from this same socket so it shares the source endpoint.
@@ -188,7 +193,7 @@ impl DataPlane {
     /// Register our live UDP endpoint with the exit node's relay. The exit node
     /// tracks connectors by this hole punch; without it the site does not stay up.
     async fn send_holepunch(&self) -> std::io::Result<()> {
-        if let Some(pkt) = crate::holepunch::build(&self.newt_id, &self.token, &self.newt_pub, &self.server_pub) {
+        if let Some(pkt) = crate::holepunch::build("newtId", &self.newt_id, &self.token, &self.newt_pub, &self.server_pub) {
             self.udp.send_to(&pkt, self.relay_addr).await?;
         }
         Ok(())

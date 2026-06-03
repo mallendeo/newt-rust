@@ -7,16 +7,18 @@ use newt_core::proto::WsMessage;
 
 pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Connect to wss://<endpoint>/api/v1/ws?token=..&clientType=newt.
+/// Connect to wss://<endpoint>/api/v1/ws?token=..&clientType=<client_type>.
+/// `client_type` is "newt" for a site session or "olm" for a client session.
 pub async fn connect(
     endpoint: &str,
     token: &str,
+    client_type: &str,
     tls: Arc<rustls::ClientConfig>,
 ) -> std::io::Result<Ws> {
     let (scheme, _hp, _h, _p) = super::token::split_endpoint(endpoint)?;
     let ws_scheme = if scheme == "https" { "wss" } else { "ws" };
     let base = endpoint.split_once("://").map(|x| x.1).unwrap_or(endpoint).trim_end_matches('/');
-    let url = format!("{ws_scheme}://{base}/api/v1/ws?token={token}&clientType=newt");
+    let url = format!("{ws_scheme}://{base}/api/v1/ws?token={token}&clientType={client_type}");
 
     let req = url.into_client_request().map_err(|e| std::io::Error::other(e.to_string()))?;
     let connector = Connector::Rustls(tls);

@@ -38,3 +38,30 @@ pub fn spawn_tcp(target: String) -> Conn {
 
     Conn { to_target: to_target_tx, from_target: from_target_rx }
 }
+
+/// Bridge an already-connected TCP stream (e.g. a locally-accepted client) the
+/// same way `spawn_tcp` bridges a dialed one. `to_target` is written to the
+/// stream; bytes read from the stream arrive on `from_target`.
+pub fn bridge_stream(mut stream: TcpStream) -> Conn {
+    let (to_target_tx, mut to_target_rx) = mpsc::channel::<Vec<u8>>(16);
+    let (from_target_tx, from_target_rx) = mpsc::channel::<Vec<u8>>(16);
+
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            tokio::select! {
+                msg = to_target_rx.recv() => match msg {
+                    Some(data) => { if stream.write_all(&data).await.is_err() { break; } }
+                    None => break,
+                },
+                n = stream.read(&mut buf) => match n {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => { if from_target_tx.send(buf[..n].to_vec()).await.is_err() { break; } }
+                },
+            }
+        }
+        let _ = stream.shutdown().await;
+    });
+
+    Conn { to_target: to_target_tx, from_target: from_target_rx }
+}

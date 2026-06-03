@@ -4,18 +4,34 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use rustls::pki_types::ServerName;
 
-/// POST {newtId,secret} to <endpoint>/api/v1/auth/newt/get-token and return the JWT.
+/// POST `body` to <endpoint>/api/v1/auth/<kind>/get-token and return the JWT.
+/// `kind` selects the credential type: "newt" for a site, "olm" for a client.
+/// `body` carries the matching id field (newtId/olmId) plus secret and any
+/// extra fields (userToken, orgId).
 pub async fn get_token(
     endpoint: &str,
-    id: &str,
-    secret: &str,
+    kind: &str,
+    body: &serde_json::Value,
     tls: Arc<rustls::ClientConfig>,
 ) -> std::io::Result<String> {
+    let data = get_token_data(endpoint, kind, body, tls).await?;
+    data["token"].as_str().map(|s| s.to_string())
+        .ok_or_else(|| std::io::Error::other("no token in response"))
+}
+
+/// Like `get_token`, but returns the whole `data` object so callers (the client
+/// role) can also read `exitNodes` alongside the token.
+pub async fn get_token_data(
+    endpoint: &str,
+    kind: &str,
+    body: &serde_json::Value,
+    tls: Arc<rustls::ClientConfig>,
+) -> std::io::Result<serde_json::Value> {
     let (scheme, hostport, host, port) = split_endpoint(endpoint)?;
-    let body = serde_json::json!({ "newtId": id, "secret": secret }).to_string();
+    let body = body.to_string();
     // Pangolin rejects non-GET API calls without this fixed CSRF header.
     let req = format!(
-        "POST /api/v1/auth/newt/get-token HTTP/1.1\r\nHost: {hostport}\r\n\
+        "POST /api/v1/auth/{kind}/get-token HTTP/1.1\r\nHost: {hostport}\r\n\
          Content-Type: application/json\r\nX-CSRF-Token: x-csrf-protection\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -43,8 +59,7 @@ pub async fn get_token(
     let json_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
     let v: serde_json::Value = serde_json::from_str(text[json_start..].trim())
         .map_err(|e| std::io::Error::other(format!("token json: {e}")))?;
-    v["data"]["token"].as_str().map(|s| s.to_string())
-        .ok_or_else(|| std::io::Error::other("no token in response"))
+    Ok(v["data"].clone())
 }
 
 /// Returns (scheme, host:port, host, port). Accepts http(s):// and bare host.

@@ -1,6 +1,6 @@
 [package]
 name = "newt"
-version = "0.1.12"
+version = "0.2.0"
 edition = "2021"
 
 [[bin]]
@@ -35,6 +35,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # mips: ring has no asm there; use the pure-Rust RustCrypto rustls provider.
 [target.'cfg(target_arch = "mips")'.dependencies]
 rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto", rev = "22f8e1dbf9608c8ce3df2d47c5c53e1378a4bdf0" }
+
+# Linux client (olm) kernel backend: TUN ioctl + rtnetlink route programming.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [features]
 default = []

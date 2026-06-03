@@ -37,7 +37,15 @@ pub enum Inbound {
 
 impl Pump {
     pub fn new(secret: StaticSecret, peer_public: PublicKey, mtu: usize) -> Self {
-        let tun = Tunn::new(secret, peer_public, None, Some(5), 0, None);
+        Self::with_index(secret, peer_public, mtu, 0)
+    }
+
+    /// Build a pump with an explicit WireGuard peer index. boringtun composes the
+    /// 32-bit local index as `index << 8 | session_slot`, so each peer in a
+    /// multi-peer router must get a distinct `index`; inbound datagrams are then
+    /// demultiplexed back to the owning peer via `peer_index_of`.
+    pub fn with_index(secret: StaticSecret, peer_public: PublicKey, mtu: usize, index: u32) -> Self {
+        let tun = Tunn::new(secret, peer_public, None, Some(5), index, None);
         Pump { tun, mtu }
     }
 
@@ -86,6 +94,24 @@ impl Pump {
             _ => None,
         }
     }
+}
+
+/// Demultiplex an inbound WireGuard datagram to the owning peer index.
+/// Reads the receiver index from handshake-response/cookie/transport-data
+/// packets and undoes boringtun's `index << 8` to recover the peer index.
+/// Returns None for packet types without a receiver index (e.g. handshake
+/// initiation), which a client connecting through a relay does not receive.
+pub fn peer_index_of(datagram: &[u8]) -> Option<u32> {
+    if datagram.len() < 8 { return None; }
+    let recv_idx_off = match datagram[0] {
+        2 => 8,       // handshake response: type, sender_index, receiver_index
+        3 | 4 => 4,   // cookie reply / transport data: type, receiver_index
+        _ => return None,
+    };
+    let end = recv_idx_off + 4;
+    if datagram.len() < end { return None; }
+    let idx = u32::from_le_bytes(datagram[recv_idx_off..end].try_into().ok()?);
+    Some(idx >> 8)
 }
 
 #[cfg(test)]
