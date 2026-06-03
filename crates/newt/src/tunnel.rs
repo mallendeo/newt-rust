@@ -51,7 +51,16 @@ async fn session(
         tokio::select! {
             msg = ws::recv(&mut socket) => {
                 let Some(msg) = msg? else { return Ok(()); };
-                if let Some(ev) = to_event(msg) {
+                if msg.typ == topic::TCP_ADD || msg.typ == topic::TCP_REMOVE {
+                    let add = msg.typ == topic::TCP_ADD;
+                    let specs: Vec<String> = msg.data.get("targets")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    if let Some(d) = data.as_mut() {
+                        if add { d.add_targets(&specs); } else { d.remove_targets(&specs); }
+                    }
+                } else if let Some(ev) = to_event(msg) {
                     for act in sm.step(ev) { exec(&mut socket, &mut data, act, cfg, keys, &jwt).await?; }
                 }
             }
@@ -199,6 +208,34 @@ impl DataPlane {
             self.udp.send_to(&dg, self.endpoint).await?;
         }
         Ok(())
+    }
+
+    /// Start listening for the given TCP targets ("listenPort:host:targetPort").
+    /// Lets resources added after connect become reachable without a restart.
+    fn add_targets(&mut self, specs: &[String]) {
+        for spec in specs {
+            let Some(t) = Target::parse(spec) else { continue };
+            if self.listeners.iter().any(|l| l.port == t.listen_port) { continue; }
+            let handle = add_listener(&mut self.stack, t.listen_port);
+            self.listeners.push(Listener {
+                port: t.listen_port,
+                target: format!("{}:{}", t.host, t.target_port),
+                handle,
+            });
+            crate::info!("tcp target added: {} -> {}:{}", t.listen_port, t.host, t.target_port);
+        }
+    }
+
+    /// Stop listening for the given TCP targets.
+    fn remove_targets(&mut self, specs: &[String]) {
+        for spec in specs {
+            let Some(t) = Target::parse(spec) else { continue };
+            while let Some(i) = self.listeners.iter().position(|l| l.port == t.listen_port) {
+                let l = self.listeners.swap_remove(i);
+                self.stack.sockets.remove(l.handle);
+                crate::info!("tcp target removed: {}", t.listen_port);
+            }
+        }
     }
 
     async fn step_io(&mut self) -> std::io::Result<()> {

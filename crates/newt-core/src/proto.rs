@@ -20,6 +20,8 @@ pub mod topic {
     pub const WG_CONNECT: &str = "newt/wg/connect";
     pub const WG_RECONNECT: &str = "newt/wg/reconnect";
     pub const WG_TERMINATE: &str = "newt/wg/terminate";
+    pub const TCP_ADD: &str = "newt/tcp/add";
+    pub const TCP_REMOVE: &str = "newt/tcp/remove";
 }
 
 #[derive(Debug, Clone, Deserialize)]
