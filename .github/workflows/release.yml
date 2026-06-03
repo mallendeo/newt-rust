@@ -18,8 +18,10 @@ jobs:
       matrix:
         include:
           - { target: x86_64-unknown-linux-musl,      suffix: linux-amd64 }
+          - { target: i686-unknown-linux-musl,        suffix: linux-386 }
           - { target: aarch64-unknown-linux-musl,     suffix: linux-arm64 }
           - { target: armv7-unknown-linux-musleabihf, suffix: linux-armv7 }
+          - { target: arm-unknown-linux-musleabihf,   suffix: linux-armv6 }
           - { target: riscv64gc-unknown-linux-musl,   suffix: linux-riscv64 }
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +54,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Best-effort native FreeBSD build in a VM (zig cannot cross-compile FreeBSD libc).
+  # continue-on-error so a FreeBSD failure never blocks the Linux release.
+  freebsd:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.2"
+          usesh: true
+          envs: "GITHUB_REF_NAME"
+          prepare: |
+            pkg install -y curl
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain nightly --component rust-src
+          run: |
+            . "$HOME/.cargo/env"
+            export RUSTFLAGS="-Zlocation-detail=none -Zfmt-debug=none -Zunstable-options -Cpanic=immediate-abort"
+            cargo build --release -p newt --target x86_64-unknown-freebsd
+            mkdir -p out
+            install -m 755 "target/x86_64-unknown-freebsd/release/newt" \
+              "out/newt-${GITHUB_REF_NAME}-freebsd-amd64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-freebsd-amd64
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
   docker:
     needs: build
     runs-on: ubuntu-latest
@@ -73,9 +107,12 @@ jobs:
         run: |
           set -euo pipefail
           T="${GITHUB_REF_NAME}"
-          install -Dm755 "artifacts/newt-${T}-linux-amd64" bin/linux/amd64/newt
-          install -Dm755 "artifacts/newt-${T}-linux-arm64" bin/linux/arm64/newt
-          install -Dm755 "artifacts/newt-${T}-linux-armv7" bin/linux/arm/v7/newt
+          install -Dm755 "artifacts/newt-${T}-linux-amd64"   bin/linux/amd64/newt
+          install -Dm755 "artifacts/newt-${T}-linux-386"     bin/linux/386/newt
+          install -Dm755 "artifacts/newt-${T}-linux-arm64"   bin/linux/arm64/newt
+          install -Dm755 "artifacts/newt-${T}-linux-armv7"   bin/linux/arm/v7/newt
+          install -Dm755 "artifacts/newt-${T}-linux-armv6"   bin/linux/arm/v6/newt
+          install -Dm755 "artifacts/newt-${T}-linux-riscv64" bin/linux/riscv64/newt
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -93,7 +130,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.release
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/amd64,linux/386,linux/arm64,linux/arm/v7,linux/arm/v6,linux/riscv64
           push: true
           provenance: false
           tags: |
@@ -101,7 +138,7 @@ jobs:
             ${{ env.IMAGE }}:latest
 
   release:
-    needs: [build, docker]
+    needs: [build, docker, freebsd]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -125,7 +162,8 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/newt-rust"
           cat > ../NOTES.md <<EOF
-          Static musl binaries, size-optimized (\`build-std\`, immediate-abort panics).
+          Static Linux musl binaries (amd64, 386, arm64, armv7, armv6, riscv64) plus a
+          FreeBSD amd64 build, size-optimized (\`build-std\`, immediate-abort panics).
 
           \`\`\`
           docker pull ${IMAGE}:${TAG}
