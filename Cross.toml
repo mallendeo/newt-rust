@@ -1,6 +1,15 @@
-# mips targets are tier 3 (no prebuilt std); build std from source.
+# mips targets are tier 3 (no prebuilt std); build std from source. The static
+# link (+crt-static) needs a libunwind to satisfy -lunwind, but the musl gcc
+# toolchains ship none; with panic=abort there are no real unwind calls, so a
+# stub archive in the sysroot lib dir resolves the link.
 [target.mipsel-unknown-linux-musl]
 build-std = true
+pre-build = [
+    "echo '' | mipsel-linux-muslsf-gcc -x c -c -o /tmp/empty.o - && ar rcs /usr/local/mipsel-linux-muslsf/lib/libunwind.a /tmp/empty.o",
+]
 
 [target.mips-unknown-linux-musl]
 build-std = true
+pre-build = [
+    "echo '' | mips-linux-muslsf-gcc -x c -c -o /tmp/empty.o - && ar rcs /usr/local/mips-linux-muslsf/lib/libunwind.a /tmp/empty.o",
+]

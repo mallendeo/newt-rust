@@ -78,7 +78,7 @@ jobs:
 
       - name: Build static binary (cross + build-std)
         env:
-          RUSTFLAGS: "-Zlocation-detail=none -Zfmt-debug=none -Zunstable-options -Cpanic=immediate-abort"
+          RUSTFLAGS: "-Zlocation-detail=none -Zfmt-debug=none -Zunstable-options -Cpanic=immediate-abort -Ctarget-feature=+crt-static -Clink-self-contained=no"
         run: |
           set -euo pipefail
           cross build --release -p newt --target "${{ matrix.target }}"
