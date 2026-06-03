@@ -64,28 +64,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Soft-float musl toolchains; matches OpenWRT/Teltonika. zig cannot
-          # cross mips-musl, so use the musl.cc cross toolchains as the linker.
-          - { target: mips-unknown-linux-musl,   suffix: linux-mips,   tc: mips-linux-muslsf }
-          - { target: mipsel-unknown-linux-musl, suffix: linux-mipsel, tc: mipsel-linux-muslsf }
+          # mips (AR9xxx Teltonikas), mipsel (MediaTek). cross provides the
+          # soft-float musl toolchain via its ghcr image (reachable from Actions,
+          # unlike musl.cc); build-std is configured in Cross.toml.
+          - { target: mips-unknown-linux-musl,   suffix: linux-mips }
+          - { target: mipsel-unknown-linux-musl, suffix: linux-mipsel }
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch musl cross toolchain
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://musl.cc/${{ matrix.tc }}-cross.tgz" -o tc.tgz
-          tar -xzf tc.tgz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross@0.2.5
 
-      - name: Build static binary (build-std + musl cross linker)
+      - name: Build static binary (cross + build-std)
         env:
           RUSTFLAGS: "-Zlocation-detail=none -Zfmt-debug=none -Zunstable-options -Cpanic=immediate-abort"
         run: |
           set -euo pipefail
-          export PATH="$PWD/${{ matrix.tc }}-cross/bin:$PATH"
-          VAR="CARGO_TARGET_$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')_LINKER"
-          export "$VAR=${{ matrix.tc }}-gcc"
-          cargo build --release -p newt --target "${{ matrix.target }}"
+          cross build --release -p newt --target "${{ matrix.target }}"
           mkdir -p out
           install -Dm755 "target/${{ matrix.target }}/release/newt" \
             "out/newt-${GITHUB_REF_NAME}-${{ matrix.suffix }}"

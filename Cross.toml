@@ -1,0 +1,6 @@
+# mips targets are tier 3 (no prebuilt std); build std from source.
+[target.mipsel-unknown-linux-musl]
+build-std = true
+
+[target.mips-unknown-linux-musl]
+build-std = true
