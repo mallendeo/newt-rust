@@ -46,6 +46,10 @@ async fn session(
 
     let mut data: Option<DataPlane> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    // Latest server config version, learned from inbound messages and echoed in
+    // the heartbeat so the server can push a sync when resources change.
+    let mut config_version: Option<i64> = None;
+    let mut ping_ticks: u32 = 0;
 
     for act in sm.step(Event::WsConnected) { exec(&mut socket, &mut data, act, cfg, keys, &jwt).await?; }
 
@@ -53,6 +57,7 @@ async fn session(
         tokio::select! {
             msg = ws::recv(&mut socket) => {
                 let Some(msg) = msg? else { return Ok(()); };
+                if msg.config_version.is_some() { config_version = msg.config_version; }
                 if msg.typ == topic::TCP_ADD || msg.typ == topic::TCP_REMOVE {
                     let add = msg.typ == topic::TCP_ADD;
                     let specs: Vec<String> = msg.data.get("targets")
@@ -62,6 +67,16 @@ async fn session(
                     if let Some(d) = data.as_mut() {
                         if add { d.add_targets(&specs); } else { d.remove_targets(&specs); }
                     }
+                } else if msg.typ == topic::SYNC {
+                    // Runtime config push: reconcile listeners to the full target
+                    // set so resources added/removed after connect take effect
+                    // without a restart.
+                    let specs: Vec<String> = msg.data.get("proxyTargets")
+                        .and_then(|p| p.get("tcp"))
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    if let Some(d) = data.as_mut() { d.reconcile_targets(&specs); }
                 } else if let Some(ev) = to_event(msg) {
                     for act in sm.step(ev) { exec(&mut socket, &mut data, act, cfg, keys, &jwt).await?; }
                 }
@@ -69,6 +84,14 @@ async fn session(
             _ = tick.tick() => {
                 for act in sm.step(Event::Tick(1000)) { exec(&mut socket, &mut data, act, cfg, keys, &jwt).await?; }
                 if let Some(d) = data.as_mut() { d.send_ping().await?; d.send_holepunch().await?; }
+                // Heartbeat: keep the site online and let the server detect a
+                // config-version drift to push resource changes.
+                ping_ticks += 1;
+                if ping_ticks >= 10 {
+                    ping_ticks = 0;
+                    let ping = WsMessage { typ: topic::PING.into(), data: serde_json::json!({}), config_version };
+                    ws::send(&mut socket, &ping).await?;
+                }
             }
             // Data-plane progress: only armed once a tunnel exists.
             r = drive(&mut data), if data.is_some() => { r?; }
@@ -235,6 +258,37 @@ impl DataPlane {
                 let l = self.listeners.swap_remove(i);
                 self.stack.sockets.remove(l.handle);
                 crate::info!("tcp target removed: {}", t.listen_port);
+            }
+        }
+    }
+
+    /// Reconcile listeners to exactly `specs` (from a `newt/sync` push): add new
+    /// targets, drop ones no longer present, and update the destination of an
+    /// existing listen port. Lets resources added/removed after connect take
+    /// effect without a restart.
+    fn reconcile_targets(&mut self, specs: &[String]) {
+        let desired: Vec<Target> = specs.iter().filter_map(|s| Target::parse(s)).collect();
+        let keep: std::collections::HashSet<u16> = desired.iter().map(|t| t.listen_port).collect();
+        let drop_ports: Vec<u16> =
+            self.listeners.iter().map(|l| l.port).filter(|p| !keep.contains(p)).collect();
+        for port in drop_ports {
+            while let Some(i) = self.listeners.iter().position(|l| l.port == port) {
+                let l = self.listeners.swap_remove(i);
+                self.stack.sockets.remove(l.handle);
+                crate::info!("tcp target removed (sync): {}", port);
+            }
+        }
+        for t in &desired {
+            let want = format!("{}:{}", t.host, t.target_port);
+            if let Some(l) = self.listeners.iter_mut().find(|l| l.port == t.listen_port) {
+                if l.target != want {
+                    l.target = want;
+                    crate::info!("tcp target updated (sync): {}", t.listen_port);
+                }
+            } else {
+                let handle = add_listener(&mut self.stack, t.listen_port);
+                self.listeners.push(Listener { port: t.listen_port, target: want, handle });
+                crate::info!("tcp target added (sync): {} -> {}:{}", t.listen_port, t.host, t.target_port);
             }
         }
     }

@@ -16,12 +16,20 @@ pub struct WsMessage {
 pub mod topic {
     pub const PING_REQUEST: &str = "newt/ping/request";
     pub const PING_EXIT_NODES: &str = "newt/ping/exitNodes";
+    /// Heartbeat the connector sends on an interval. The server records it to
+    /// keep the site online and, when the carried `configVersion` is behind,
+    /// responds with a `newt/sync` so resource changes apply without a restart.
+    pub const PING: &str = "newt/ping";
     pub const WG_REGISTER: &str = "newt/wg/register";
     pub const WG_CONNECT: &str = "newt/wg/connect";
     pub const WG_RECONNECT: &str = "newt/wg/reconnect";
     pub const WG_TERMINATE: &str = "newt/wg/terminate";
     pub const TCP_ADD: &str = "newt/tcp/add";
     pub const TCP_REMOVE: &str = "newt/tcp/remove";
+    /// Full config reconciliation the server pushes when resources/targets
+    /// change at runtime. Carries the complete target set under
+    /// `data.proxyTargets.tcp`.
+    pub const SYNC: &str = "newt/sync";
 }
 
 #[derive(Debug, Clone, Deserialize)]

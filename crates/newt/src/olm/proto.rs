@@ -8,6 +8,9 @@ pub mod topic {
     // outbound (client -> server)
     pub const REGISTER: &str = "olm/wg/register";
     pub const DISCONNECTING: &str = "olm/disconnecting";
+    /// Heartbeat the client sends on an interval; the server records it to keep
+    /// the client online.
+    pub const PING: &str = "olm/ping";
     // inbound (server -> client)
     pub const CONNECT: &str = "olm/wg/connect";
     pub const ERROR: &str = "olm/error";

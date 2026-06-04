@@ -72,6 +72,7 @@ async fn session(
     let mut dp: Option<DataPlane> = None;
     let mut buf = vec![0u8; cfg.mtu.max(1500) + 64];
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut ping_ticks: u32 = 0;
 
     ws::send(&mut socket, &register_msg(cfg, &keys.public_b64)).await?;
 
@@ -88,6 +89,12 @@ async fn session(
                 for (b, e) in hp.datagrams() { udp.send_to(&b, e).await?; }
                 if let Some(d) = dp.as_mut() {
                     for (b, e) in d.router.tick() { udp.send_to(&b, e).await?; }
+                }
+                // Heartbeat: the server records each ping to keep the client online.
+                ping_ticks += 1;
+                if ping_ticks >= 10 {
+                    ping_ticks = 0;
+                    ws::send(&mut socket, &ping_msg(cfg)).await?;
                 }
             }
             r = udp.recv_from(&mut buf) => {
@@ -239,6 +246,14 @@ fn register_msg(cfg: &ClientRun, public_key_b64: &str) -> WsMessage {
             "fingerprint": {},
             "postures": {},
         }),
+        config_version: None,
+    }
+}
+
+fn ping_msg(cfg: &ClientRun) -> WsMessage {
+    WsMessage {
+        typ: proto::topic::PING.into(),
+        data: json!({ "userToken": cfg.user_token, "fingerprint": {}, "postures": {} }),
         config_version: None,
     }
 }

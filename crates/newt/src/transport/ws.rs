@@ -41,6 +41,11 @@ pub async fn recv(ws: &mut Ws) -> std::io::Result<Option<WsMessage>> {
                 let m: WsMessage = serde_json::from_str(&t).map_err(std::io::Error::other)?;
                 return Ok(Some(m));
             }
+            // Reply to server keepalive pings immediately; a missed pong makes
+            // the server drop the connection, forcing a reconnect.
+            Message::Ping(p) => {
+                ws.send(Message::Pong(p)).await.map_err(|e| std::io::Error::other(e.to_string()))?;
+            }
             Message::Close(_) => return Ok(None),
             _ => continue,
         }
