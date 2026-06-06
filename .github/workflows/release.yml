@@ -36,6 +36,28 @@ jobs:
       - name: Add target (for musl startup objects; tier-3 targets fall back to build-std)
         run: rustup target add "${{ matrix.target }}" || true
 
+      # rustc puts -Wl,--fix-cortex-a53-843419 in aarch64's pre_link_args, but
+      # `zig cc` rejects it as an unsupported linker arg. Forward zig through a
+      # shim that drops the flag; harmless on every other target.
+      - name: Install zig shim
+        run: |
+          set -euo pipefail
+          echo "REAL_ZIG=$(command -v zig)" >> "$GITHUB_ENV"
+          shim="$RUNNER_TEMP/zig"
+          cat > "$shim" <<'SHIM'
+          #!/usr/bin/env bash
+          args=()
+          for a in "$@"; do
+            case "$a" in
+              -Wl,--fix-cortex-a53-843419|--fix-cortex-a53-843419) ;;
+              *) args+=("$a") ;;
+            esac
+          done
+          exec "$REAL_ZIG" "${args[@]}"
+          SHIM
+          chmod +x "$shim"
+          echo "CARGO_ZIGBUILD_ZIG_PATH=$shim" >> "$GITHUB_ENV"
+
       - name: Build static binary
         env:
           RUSTFLAGS: "-Zlocation-detail=none -Zfmt-debug=none -Zunstable-options -Cpanic=immediate-abort -Cforce-unwind-tables=no --cfg curve25519_dalek_backend=\"serial\""
